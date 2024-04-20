@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, cast
 
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.io as pio
 from gentropy.common.spark_helpers import calculate_neglog_pvalue
 from gentropy.dataset.summary_statistics import SummaryStatistics
 from pyspark.sql import DataFrame, SparkSession
@@ -24,32 +23,34 @@ class ManhattanPlot:
     Human genome build: GRCh38.p14
     """
 
-    CHROMOSOMES: List[Tuple[str, int]] = [
-        ("1", 248956422),
-        ("2", 242193529),
-        ("3", 198295559),
-        ("4", 190214555),
-        ("5", 181538259),
-        ("6", 170805979),
-        ("7", 159345973),
-        ("8", 145138636),
-        ("9", 138394717),
-        ("10", 133797422),
-        ("11", 135086622),
-        ("12", 133275309),
-        ("13", 114364328),
-        ("14", 107043718),
-        ("15", 101991189),
-        ("16", 90338345),
-        ("17", 83257441),
-        ("18", 80373285),
-        ("19", 58617616),
-        ("20", 64444167),
-        ("21", 46709983),
-        ("22", 50818468),
-        ("X", 156040895),
-        ("Y", 57227415),
-    ]
+    CHROMOSOMES: List[Tuple[str, int]] = field(
+        default_factory=lambda: [
+            ("1", 248956422),
+            ("2", 242193529),
+            ("3", 198295559),
+            ("4", 190214555),
+            ("5", 181538259),
+            ("6", 170805979),
+            ("7", 159345973),
+            ("8", 145138636),
+            ("9", 138394717),
+            ("10", 133797422),
+            ("11", 135086622),
+            ("12", 133275309),
+            ("13", 114364328),
+            ("14", 107043718),
+            ("15", 101991189),
+            ("16", 90338345),
+            ("17", 83257441),
+            ("18", 80373285),
+            ("19", 58617616),
+            ("20", 64444167),
+            ("21", 46709983),
+            ("22", 50818468),
+            ("X", 156040895),
+            ("Y", 57227415),
+        ]
+    )
 
     # Default color scheme:
     EVEN_COLOR: str = "#7D9EC0"
@@ -57,10 +58,19 @@ class ManhattanPlot:
     LEAD_COLOR: str = "#b22222"
 
     # Manhattan plot parameters:
-    PVAL_CUTOFF: float = 0.01
+    PVAL_CUTOFF: float = 0.001
     APPLY_CLUMPING: bool = False
 
+    # Marker sizes:
+    DOT_SIZE: float = 3.0
+    LEAD_DOT_SIZE: float = 7.0
+
     def _get_chromosome_annotation(self: ManhattanPlot) -> DataFrame:
+        """Get chromosome annotation data.
+
+        Returns:
+            DataFrame: chromosome annotation data
+        """
         # Column name in the returned dataframe:
         columns = ["chromosome", "cumulative_length", "chromosome_lenght", "color"]
 
@@ -91,6 +101,14 @@ class ManhattanPlot:
         self: ManhattanPlot,
         summary_stats: SummaryStatistics,
     ) -> DataFrame:
+        """Process summary statistics data.
+
+        Args:
+            summary_stats (SummaryStatistics): genome-wide single point association summary statistics
+
+        Returns:
+            DataFrame: processed summary statistics
+        """
         # Extract chromosome data:
         chromosome_data = self._get_chromosome_annotation()
 
@@ -107,7 +125,10 @@ class ManhattanPlot:
                 "color",
                 "studyId",
                 "variantId",
-                f.lit(6.0).alias("dotSize"),
+                "pValueMantissa",
+                "pValueExponent",
+                "beta",
+                f.lit(self.DOT_SIZE).alias("dotSize"),
             )
             .orderBy(f.col("position").asc())
         )
@@ -132,7 +153,9 @@ class ManhattanPlot:
                 # Update dot size for hits:
                 .withColumn(
                     "dotSize",
-                    f.when(f.col("isIndex"), f.lit(12.0)).otherwise(f.col("dotSize")),
+                    f.when(f.col("isIndex"), f.lit(self.LEAD_DOT_SIZE)).otherwise(
+                        f.col("dotSize")
+                    ),
                 )
             )
 
@@ -141,20 +164,54 @@ class ManhattanPlot:
     def _process_clumping(
         self: ManhattanPlot, summary_stats: SummaryStatistics
     ) -> DataFrame:
+        """Process clumping data.
+
+        Args:
+            summary_stats (SummaryStatistics): genome-wide single point association summary statistics
+
+        Returns:
+            DataFrame: clumping data
+        """
         return summary_stats.window_based_clumping().df.select(
             "studyId", "variantId", f.lit(True).alias("isIndex")
         )
 
     def create_manhattan_plot(
         self: ManhattanPlot, summary_statistics: SummaryStatistics
-    ):
+    ) -> go.Figure:
+        """Generate manhattan plot from summary statistics.
+
+        Args:
+            self (ManhattanPlot): _description_
+            summary_statistics (SummaryStatistics): genome-wide single point association summary statistics
+
+        Returns:
+            go.Figure:
+        """
         # Do data processing prior plotting:
         processed_summary_statistics = cast(
             pd.DataFrame, self._process_data(summary_statistics).toPandas()
         )
-
+        print(processed_summary_statistics.head())
         study_chromosomes = processed_summary_statistics.chromosome.unique()
         study_id = processed_summary_statistics.studyId[0]
+
+        # Extract data to show:
+        custom_data = processed_summary_statistics[
+            ["variantId", "pValueMantissa", "pValueExponent", "beta"]
+        ].to_numpy()
+
+        # Create hover template:
+        hover_template = (
+            ",".join(
+                [
+                    "<BR><b>VariantId: </b> %{customdata[0]}",
+                    "<BR><b>P-value: </b> %{customdata[1]:.3f}E%{customdata[2]}",
+                    "<BR><b>Beta: </b> %{customdata[3]:.3f}",
+                ]
+            )
+            + "<extra></extra>"
+        )
 
         # X-axis limits +/- 2% of the full range:
         x_axis_min = (
@@ -195,6 +252,8 @@ class ManhattanPlot:
             # Adding single point associations:
             .add_trace(
                 go.Scatter(
+                    customdata=custom_data,
+                    hovertemplate=hover_template,
                     x=processed_summary_statistics.position,
                     y=processed_summary_statistics.negLogPValue,
                     mode="markers",
@@ -202,8 +261,8 @@ class ManhattanPlot:
                         size=processed_summary_statistics.dotSize,
                         color=processed_summary_statistics.color,
                         opacity=0.8,
+                        line=dict(width=0),
                     ),
-                    line=dict(width=0),
                 )
             )
             .update_layout(

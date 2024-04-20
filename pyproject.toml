@@ -3,8 +3,9 @@ name = "gentropy-plots"
 version = "0.0.0"
 description = "A collection of plotting tools based on gentropy data objects"
 authors = ["Daniel Suveges <daniel.suveges@protonmail.com>"]
-license = "Apache 2.0"
+license = "Apache-2.0"
 readme = "README.md"
+packages = [{ include = "gentropy_plots", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.10, <3.11"
