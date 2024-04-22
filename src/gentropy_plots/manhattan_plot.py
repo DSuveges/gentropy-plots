@@ -192,7 +192,7 @@ class ManhattanPlot:
         processed_summary_statistics = cast(
             pd.DataFrame, self._process_data(summary_statistics).toPandas()
         )
-        print(processed_summary_statistics.head())
+
         study_chromosomes = processed_summary_statistics.chromosome.unique()
         study_id = processed_summary_statistics.studyId[0]
 
